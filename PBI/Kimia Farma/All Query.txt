@@ -1,0 +1,226 @@
+				---TABEL BASE ANALYSIS---
+	Merupakan tabel dasar untuk dilakukanya analisa pada Dashboard nanti
+
+
+
+1. Inner join pada tabel transaction, kantor cabang dan produk
+create table dataset_kimia_farma.analisa as (
+select 
+	t.transaction_id, 
+	t.date, 
+	t.branch_id, 
+	kc.branch_name, 
+	kc.kota,
+	kc.provinsi,
+	kc.rating as rating_cabang,
+	t.customer_name,
+	t.product_id,
+	p.product_name,
+	p.price as product_price,
+	t.discount_percentage,
+	t.rating as rating_transaksi
+from dataset_kimia_farma.transaction as t 
+inner join dataset_kimia_farma.kantor_cabang as kc on t.branch_id = kc.branch_id
+inner join dataset_kimia_farma.product as p on t.product_id = p.product_id
+);
+
+
+2. membuat variabel baru seperti persentase_gross_laba & nett_sales. setelah itu dibuat tabel baru
+create table dataset_kimia_farma.tabel_pertama as (
+select
+	transaction_id,
+	case when product_price <= 50000 then 10
+		 when product_price <= 100000 then 15
+		 when product_price <= 300000 then 20
+		 when product_price <= 500000 then 25
+		 else 30
+	end as persentase_gross_laba,
+	(product_price - (product_price*discount_percentage)) as nett_sales
+from dataset_kimia_farma.analisa
+);
+
+
+
+create table dataset_kimia_farma.base_analysis as (
+
+# membuat tabel sementara yang berisi operasi join antara tabel analisa dengan tabel pertama
+with
+tabel_sementara_1 as (
+select
+  a.transaction_id, 
+	a.date, 
+	a.branch_id, 
+	a.branch_name, 
+	a.kota,
+	a.provinsi,
+	a.rating_cabang,
+	a.customer_name,
+	a.product_id,
+	a.product_name,
+	a.product_price,
+	a.discount_percentage,
+	a.rating_transaksi,
+	tp.persentase_gross_laba,
+	tp.nett_sales
+from dataset_kimia_farma.analisa as a
+inner join dataset_kimia_farma.tabel_pertama as tp on a.transaction_id = tp.transaction_id
+),
+
+# membuat tabel sementara untuk menghitung nett profit
+tabel_sementara_2 as (
+select
+  tabel_sementara_1.transaction_id,
+  round((tabel_sementara_1.product_price - (tabel_sementara_1.product_price*tabel_sementara_1.discount_percentage))*(tabel_sementara_1.persentase_gross_laba/100),2) as nett_profit
+from tabel_sementara_1 
+)
+
+# melakukan join pada tabel sementara 1 dengan tabel sementara 2
+select 
+  ts1.transaction_id, 
+	ts1.date, 
+	ts1.branch_id, 
+	ts1.branch_name, 
+	ts1.kota,
+	ts1.provinsi,
+	ts1.rating_cabang,
+	ts1.customer_name,
+	ts1.product_id,
+	ts1.product_name,
+	ts1.product_price,
+	ts1.discount_percentage,
+	ts1.rating_transaksi,
+	ts1.persentase_gross_laba,
+	ts1.nett_sales,
+  ts2.nett_profit
+from tabel_sementara_1 as ts1 
+inner join tabel_sementara_2 as ts2 on ts1.transaction_id = ts2.transaction_id
+
+
+# create tabel untuk membuat tabel baru
+);
+
+
+
+			---CREATE TABLE AGGREGATE2---
+Merupakan tabel hasil dari Tabel Base Analysis. Pada tabel Aggregate2 ditambahkan kolom seperti
+Tahun, Bulan dan Bulan_Numerik
+
+
+create table dataset_kimia_farma.tabel_aggregate2 as
+(
+select 
+  date,
+  extract(year from date) as tahun,
+  extract(month from date) as bulan_numerik,
+  FORMAT_DATE("%B",date) AS bulan,
+  transaction_id,
+  branch_id,
+  branch_name,
+  kota,
+  provinsi,
+  rating_cabang,
+  product_id,
+  product_name,
+  product_price,
+  discount_percentage,
+  rating_transaksi,
+  persentase_gross_laba,
+  nett_sales,
+  nett_profit
+from dataset_kimia_farma.base_analysis
+)
+
+
+			 --- PROFIT OVER SALES RATE ---
+Merupakan tabel yang digunakan untuk mengevaluasi hubungan antara laba yang dihasilkan oleh sebuah perusahaan dengan jumlah penjualan yang dilakukan.
+
+
+with
+table_sementara as (
+select
+  tahun,
+  bulan_numerik,
+  --extract(month from date) as bulan_numerik,
+  bulan,
+  provinsi,
+  branch_name,
+  count(transaction_id) as total_transaksi,
+  sum(nett_sales) total_sales,
+  sum(sum(nett_sales)) over(partition by tahun, bulan, provinsi) total_monthly_sales_by_province,
+  sum(sum(nett_profit)) over(partition by tahun, bulan, provinsi) total_monthly_profit_by_province 
+from dataset_kimia_farma.tabel_aggregate2
+group by tahun, bulan_numerik, bulan, provinsi, branch_name
+order by tahun, bulan_numerik
+)
+
+select
+  *,
+  round((total_monthly_profit_by_province / total_monthly_sales_by_province)*100,2) as profit_over_sales,
+  round(avg(round((total_monthly_profit_by_province / total_monthly_sales_by_province)*100,2)) over (partition by tahun, bulan),2) as average_profit_over_sales_monthly 
+from table_sementara
+order by tahun, bulan_numerik asc
+
+
+
+			   --- SALES GROWTH RATE ---
+	Merupakan tabel untuk melihat pertumbuhan sales dari bulan ke bulan
+
+
+select
+    tahun,
+  	bulan_numerik,
+    bulan,
+  	sum(nett_sales) AS total_net_sales,
+  	lag(sum(nett_sales)) over (order by tahun, bulan_numerik) as prev_month_sales,
+    sum(nett_sales) - lag(sum(nett_sales)) over (order by tahun, bulan_numerik) as growth_sales,
+    round(((sum(nett_sales) - lag(sum(nett_sales)) over (order by tahun, bulan_numerik)) / lag(sum(nett_sales)) over (order by tahun, bulan_numerik))*100,2) as growth_sales_rate
+from dataset_kimia_farma.tabel_aggregate2
+group by tahun, bulan_numerik, bulan
+order by tahun, bulan_numerik
+
+
+
+				---MARKET SHARE---
+Merupakan tabel yang digunakan untuk melihat pangsa pasar penjualan produk Kimia Farma
+
+
+-- Market Share based on island
+create table dataset_kimia_farma.tabel_aggregate3 as (
+select
+  *,
+  case
+    when lower(provinsi) in ('aceh','sumatera utara','sumatera barat','sumatera selatan','riau','jambi','kepulauan riau','bangka belitung') then 'Sumatera'
+    when lower(provinsi) in ('banten','dki jakarta','jawa barat','jawa tengah','di yogyakarta','jawa timur') then 'Jawa'
+    when lower(provinsi) in ('kalimantan utara','kalimantan selatan','kalimantan timur','kalimantan tengah','kalimantan barat') then 'Kalimantan'
+    when lower(provinsi) in ('bali') then 'Bali'
+    when lower(provinsi) in ('sulawesi utara','sulawesi tengah','sulawesi tenggara','sulawesi selatan','gorontalo') then 'Sulawesi'
+    when lower(provinsi) in ('maluku utara', 'maluku') then 'Maluku'
+    when lower(provinsi) in ('nusa tenggara timur','nusa tenggara barat') then 'Nusa Tenggara'
+    when lower(provinsi) in ('papua','papua barat') then 'Papua'
+    else 'Other'
+  end as pulau
+from dataset_kimia_farma.tabel_aggregate2
+)
+
+
+select
+  pulau,
+  (sum(nett_sales) / (select
+                        min(sum(nett_sales)) over ()
+                      from dataset_kimia_farma.tabel_aggregate3))*100 as market_share_percent
+from dataset_kimia_farma.tabel_aggregate3
+group by pulau
+order by pulau
+
+
+	--- TOP 5 HIGHEST BRANCH RATING BUT LOWEST TRANSACTION RATING ---
+Merupakan tabel yang digunakan untuk melihat kantor cabang yang memiliki rating tertinggi namun rating transaksi rendah
+
+
+select 
+  branch_id,
+  avg(rating_cabang) as cabang_rating,
+  round(avg(rating_transaksi),2) as transaksi_rating
+from dataset_kimia_farma.tabel_aggregate3
+group by branch_id
+order by cabang_rating desc, transaksi_rating asc
